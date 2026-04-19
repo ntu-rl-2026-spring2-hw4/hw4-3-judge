@@ -1,11 +1,11 @@
 """
-Evaluation script for NTU DRL HW4 Q3 (DMC humanoid-walk).
+Evaluation script for NTU DRL HW4 Q3 (DMC humanoid-run).
 
 Usage:
     python judge.py [--student-path PATH] [--output PATH] [--num-episodes N]
 
 Loads the student's agent from student_agent.py (class `Agent`) and evaluates
-it over NUM_EPISODES episodes of `humanoid-walk`, writing a results JSON
+it over NUM_EPISODES episodes of `humanoid-run`, writing a results JSON
 compatible with the leaderboard's `update_score.py`:
 
     {"score": mean-std, "mean_return": ..., "std_return": ..., "num_episodes": ...}
@@ -24,7 +24,7 @@ from dmc import make_dmc_env
 
 
 # ── Config ──────────────────────────────────────────────────────────────
-TASK              = "humanoid-walk"
+TASK              = "humanoid-run"
 NUM_EPISODES      = 100
 ENV_SEED_BASE     = 1000   # per-episode env seeds: 1000..(1000+N-1), same for every student
 POLICY_SEED_BASE  = 0      # per-episode policy RNG seeds: 0..(N-1)
@@ -169,7 +169,7 @@ def save_results(results: dict, output_path: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate a student HW4 Q3 agent on humanoid-walk.")
+    parser = argparse.ArgumentParser(description="Evaluate a student HW4 Q3 agent on humanoid-run.")
     parser.add_argument("--student-path", default=".", help="Directory containing student_agent.py")
     parser.add_argument("--output",       default="results.json", help="Path to write results JSON")
     parser.add_argument("--num-episodes", type=int, default=NUM_EPISODES, help="Override episode count (for debugging)")

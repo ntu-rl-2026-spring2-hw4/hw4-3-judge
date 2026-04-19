@@ -1,6 +1,6 @@
 # HW4 Q3 Judge Workflow
 
-Self-hosted evaluation pipeline for NTU DRL HW4 Q3 (DMC **humanoid-walk**).
+Self-hosted evaluation pipeline for NTU DRL HW4 Q3 (DMC **humanoid-run**).
 Runs on GitHub-hosted `ubuntu-latest` — no GPU required.
 
 ## Structure
@@ -39,7 +39,7 @@ The workflow:
    `requirements.txt` (so the student can add torch, etc. without changing
    the sim stack).
 5. Runs `judge.py`, which evaluates `Agent()` over 100 episodes of
-   `humanoid-walk` and writes `results.json`:
+   `humanoid-run` and writes `results.json`:
    ```json
    { "score": 453.2, "mean_return": 480.0, "std_return": 26.8, "num_episodes": 100 }
    ```
