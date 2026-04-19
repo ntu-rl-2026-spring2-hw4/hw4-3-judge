@@ -1,0 +1,182 @@
+name: Evaluate HW4 Q3
+
+# Reusable workflow invoked by each student's repo via `uses:`.
+# The caller passes a PAT scoped to the leaderboard repo as LEADERBOARD_TOKEN.
+
+on:
+  workflow_call:
+    inputs:
+      leaderboard_repo:
+        description: "owner/repo of the leaderboard (for repository_dispatch)"
+        required: false
+        type: string
+        default: "ntu-rl-2026-spring2-hw4/drl-hw4-q3-leaderboard"
+      judge_repo:
+        description: "owner/repo of this judge (for self-checkout)"
+        required: false
+        type: string
+        default: "ntu-rl-2026-spring2-hw4/drl-hw4-q3-judge"
+      student_path:
+        description: "Sub-directory inside the student repo that holds meta.xml + student_agent.py"
+        required: false
+        type: string
+        default: "Q3"
+    secrets:
+      LEADERBOARD_TOKEN:
+        required: true
+
+# Serialize runs per-student-repo; the leaderboard side also has its own queue.
+concurrency:
+  group: evaluate-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MUJOCO_GL: osmesa
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      # ── Checkout student + judge ──────────────────────────────────────
+      - name: Checkout student repo
+        uses: actions/checkout@v4
+        with:
+          path: student
+
+      - name: Checkout judge repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.judge_repo }}
+          path: judge
+          ref: main
+
+      # ── Resolve + validate student ID from meta.xml ──────────────────
+      - name: Parse meta.xml
+        id: meta
+        run: |
+          META="student/${{ inputs.student_path }}/meta.xml"
+          if [ ! -f "$META" ]; then
+            echo "::error::meta.xml not found at $META"
+            exit 1
+          fi
+          # Pull <name>...</name> and lowercase it.
+          SID=$(grep -oE '<name>[^<]+</name>' "$META" | head -1 | sed -E 's:</?name>::g' | tr '[:upper:]' '[:lower:]' | xargs)
+          echo "Raw student_id: '$SID'"
+          if [ -z "$SID" ] || [ "$SID" = "r00000000" ]; then
+            echo "::error::Placeholder or empty student_id in meta.xml ('$SID'). Update meta.xml with your real student ID."
+            exit 1
+          fi
+          if ! echo "$SID" | grep -Eq '^[br][0-9]{8,9}$'; then
+            echo "::error::student_id must match ^[br][0-9]{8,9}$ (lowercase). Got '$SID'."
+            exit 1
+          fi
+          echo "student_id=$SID" >> $GITHUB_OUTPUT
+
+      # ── System deps for dm_control / MuJoCo headless ─────────────────
+      - name: Install MuJoCo system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglfw3 libosmesa6 patchelf
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          # Pin the RL/sim stack via the judge's lockfile first.
+          pip install -r judge/requirements.txt
+          # Student's own deps (torch etc.) installed afterwards; must not
+          # clobber the pinned versions above. If a student bumps them the
+          # judge may still work, but that's on them.
+          if [ -f "student/${{ inputs.student_path }}/requirements.txt" ]; then
+            pip install -r "student/${{ inputs.student_path }}/requirements.txt"
+          elif [ -f "student/requirements.txt" ]; then
+            pip install -r "student/requirements.txt"
+          fi
+
+      # ── Run evaluation ───────────────────────────────────────────────
+      - name: Run judge
+        id: eval
+        run: |
+          set -o pipefail
+          cd judge
+          python judge.py \
+            --student-path "../student/${{ inputs.student_path }}" \
+            --output /tmp/results.json \
+            | tee /tmp/judge.log
+          echo "--- results.json ---"
+          cat /tmp/results.json
+          # Collapse to a single line for GITHUB_OUTPUT
+          RESULTS_JSON=$(jq -c . /tmp/results.json)
+          {
+            echo "results_json<<EOF"
+            echo "$RESULTS_JSON"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload log (on failure or always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-log-${{ github.run_id }}
+          path: |
+            /tmp/judge.log
+            /tmp/results.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # ── Dispatch results to leaderboard ──────────────────────────────
+      - name: Dispatch score to leaderboard
+        if: success()
+        env:
+          TOKEN:   ${{ secrets.LEADERBOARD_TOKEN }}
+          LB_REPO: ${{ inputs.leaderboard_repo }}
+          SID:     ${{ steps.meta.outputs.student_id }}
+          RESULTS: ${{ steps.eval.outputs.results_json }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO:    ${{ github.repository }}
+          SHA:     ${{ github.sha }}
+          ACTOR:   ${{ github.actor }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg sid     "$SID" \
+            --argjson results "$RESULTS" \
+            --arg run_url "$RUN_URL" \
+            --arg repo    "$REPO" \
+            --arg sha     "$SHA" \
+            --arg actor   "$ACTOR" \
+            '{
+              event_type: "submit_score",
+              client_payload: {
+                student_id: $sid,
+                results:    $results,
+                audit: {
+                  repository: $repo,
+                  run_url:    $run_url,
+                  sha:        $sha,
+                  actor:      $actor
+                }
+              }
+            }')
+          echo "Dispatching to $LB_REPO:"
+          echo "$PAYLOAD" | jq
+          CODE=$(curl -sS -o /tmp/disp_body -w "%{http_code}" \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$LB_REPO/dispatches" \
+            -d "$PAYLOAD")
+          echo "HTTP $CODE"
+          cat /tmp/disp_body || true
+          if [ "$CODE" != "204" ]; then
+            echo "::error::dispatch to $LB_REPO failed (HTTP $CODE)"
+            exit 1
+          fi
+          echo "Dispatch successful."
