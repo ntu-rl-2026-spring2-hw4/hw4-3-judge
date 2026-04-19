@@ -10,12 +10,12 @@ on:
         description: "owner/repo of the leaderboard (for repository_dispatch)"
         required: false
         type: string
-        default: "ntu-rl-2026-spring2-hw4/drl-hw4-q3-leaderboard"
+        default: "ntu-rl-2026-spring2-hw4/hw4-3-leaderboard"
       judge_repo:
         description: "owner/repo of this judge (for self-checkout)"
         required: false
         type: string
-        default: "ntu-rl-2026-spring2-hw4/drl-hw4-q3-judge"
+        default: "ntu-rl-2026-spring2-hw4/hw4-3-judge"
       student_path:
         description: "Sub-directory inside the student repo that holds meta.xml + student_agent.py"
         required: false

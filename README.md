@@ -24,7 +24,7 @@ on:
 
 jobs:
   evaluate:
-    uses: ntu-rl-2026-spring2-hw4/drl-hw4-q3-judge/.github/workflows/evaluate.yml@main
+    uses: ntu-rl-2026-spring2-hw4/hw4-3-judge/.github/workflows/evaluate.yml@main
     secrets:
       LEADERBOARD_TOKEN: ${{ secrets.LEADERBOARD_TOKEN }}
 ```
