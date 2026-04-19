@@ -1,182 +1,143 @@
 name: Evaluate HW4 Q3
 
 # Reusable workflow invoked by each student's repo via `uses:`.
-# The caller passes a PAT scoped to the leaderboard repo as LEADERBOARD_TOKEN.
+# Runs on a self-hosted runner (docker container on TA machine).
+# LEADERBOARD_TOKEN is baked into the runner container's env_file, so
+# students do NOT need to set any repo secret.
 
 on:
   workflow_call:
-    inputs:
-      leaderboard_repo:
-        description: "owner/repo of the leaderboard (for repository_dispatch)"
-        required: false
-        type: string
-        default: "ntu-rl-2026-spring2-hw4/hw4-3-leaderboard"
-      judge_repo:
-        description: "owner/repo of this judge (for self-checkout)"
-        required: false
-        type: string
-        default: "ntu-rl-2026-spring2-hw4/hw4-3-judge"
-      student_path:
-        description: "Sub-directory inside the student repo that holds meta.xml + student_agent.py"
-        required: false
-        type: string
-        default: "Q3"
-    secrets:
-      LEADERBOARD_TOKEN:
-        required: true
-
-# Serialize runs per-student-repo; the leaderboard side also has its own queue.
-concurrency:
-  group: evaluate-${{ github.repository }}
-  cancel-in-progress: true
 
 jobs:
   evaluate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      MUJOCO_GL: osmesa
-      PYTHONUNBUFFERED: "1"
+    runs-on: self-hosted
 
     steps:
       # ── Checkout student + judge ──────────────────────────────────────
-      - name: Checkout student repo
+      - name: Checkout student submission
         uses: actions/checkout@v4
         with:
           path: student
 
-      - name: Checkout judge repo
+      - name: Remove .git from student submission
+        run: rm -rf student/.git
+
+      - name: Checkout judge
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.judge_repo }}
+          repository: ntu-rl-2026-spring2-hw4/hw4-3-judge
           path: judge
-          ref: main
 
-      # ── Resolve + validate student ID from meta.xml ──────────────────
-      - name: Parse meta.xml
+      # ── Resolve + validate student ID from Q3/meta.xml ───────────────
+      - name: Extract student ID from meta.xml
         id: meta
         run: |
-          META="student/${{ inputs.student_path }}/meta.xml"
-          if [ ! -f "$META" ]; then
-            echo "::error::meta.xml not found at $META"
-            exit 1
-          fi
-          # Pull <name>...</name> and lowercase it.
-          SID=$(grep -oE '<name>[^<]+</name>' "$META" | head -1 | sed -E 's:</?name>::g' | tr '[:upper:]' '[:lower:]' | xargs)
-          echo "Raw student_id: '$SID'"
-          if [ -z "$SID" ] || [ "$SID" = "r00000000" ]; then
-            echo "::error::Placeholder or empty student_id in meta.xml ('$SID'). Update meta.xml with your real student ID."
+          student_id=$(python3 - <<'PYEOF'
+          import sys, xml.etree.ElementTree as ET
+          try:
+              tree = ET.parse("student/Q3/meta.xml")
+              val = tree.find("./info/name")
+              if val is None or not (val.text or "").strip():
+                  raise ValueError
+              print(val.text.strip().lower())
+          except FileNotFoundError:
+              print("::error::Q3/meta.xml not found. Make sure it exists in your repo.", file=sys.stderr)
+              sys.exit(1)
+          except Exception:
+              print("::error::Q3/meta.xml is malformed. Check that <info><name>your_id</name></info> is present.", file=sys.stderr)
+              sys.exit(1)
+          PYEOF
+          )
+          echo "student_id=$student_id" >> "$GITHUB_OUTPUT"
+
+      - name: Reject template placeholder / invalid ID
+        run: |
+          SID="${{ steps.meta.outputs.student_id }}"
+          if [ "$SID" = "r00000000" ]; then
+            echo "::error::Student ID is r00000000 — the template placeholder. Update Q3/meta.xml with your real student ID."
             exit 1
           fi
           if ! echo "$SID" | grep -Eq '^[br][0-9]{8,9}$'; then
             echo "::error::student_id must match ^[br][0-9]{8,9}$ (lowercase). Got '$SID'."
             exit 1
           fi
-          echo "student_id=$SID" >> $GITHUB_OUTPUT
 
-      # ── System deps for dm_control / MuJoCo headless ─────────────────
-      - name: Install MuJoCo system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1 libglfw3 libosmesa6 patchelf
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      # ── Python env via uv ────────────────────────────────────────────
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.11"
 
-      - name: Install Python deps
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          # Pin the RL/sim stack via the judge's lockfile first.
-          pip install -r judge/requirements.txt
-          # Student's own deps (torch etc.) installed afterwards; must not
-          # clobber the pinned versions above. If a student bumps them the
-          # judge may still work, but that's on them.
-          if [ -f "student/${{ inputs.student_path }}/requirements.txt" ]; then
-            pip install -r "student/${{ inputs.student_path }}/requirements.txt"
+          uv venv --clear .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          # Judge's pinned RL/sim stack first.
+          uv pip install --python .venv/bin/python -r judge/requirements.txt
+          # Torch (CPU) for any student policies that use it.
+          uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+          # Student deps (may re-pin some packages — on them if it breaks).
+          if [ -f "student/Q3/requirements.txt" ]; then
+            uv pip install --python .venv/bin/python -r student/Q3/requirements.txt
           elif [ -f "student/requirements.txt" ]; then
-            pip install -r "student/requirements.txt"
+            uv pip install --python .venv/bin/python -r student/requirements.txt
           fi
 
-      # ── Run evaluation ───────────────────────────────────────────────
+      # ── Evaluation ───────────────────────────────────────────────────
       - name: Run judge
         id: eval
+        env:
+          MUJOCO_GL: osmesa
+          PYTHONUNBUFFERED: "1"
         run: |
           set -o pipefail
-          cd judge
-          python judge.py \
-            --student-path "../student/${{ inputs.student_path }}" \
-            --output /tmp/results.json \
-            | tee /tmp/judge.log
+          python judge/judge.py \
+            --student-path student/Q3 \
+            --output results.json \
+            | tee judge.log
           echo "--- results.json ---"
-          cat /tmp/results.json
-          # Collapse to a single line for GITHUB_OUTPUT
-          RESULTS_JSON=$(jq -c . /tmp/results.json)
-          {
-            echo "results_json<<EOF"
-            echo "$RESULTS_JSON"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          cat results.json
 
-      - name: Upload log (on failure or always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: judge-log-${{ github.run_id }}
-          path: |
-            /tmp/judge.log
-            /tmp/results.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-      # ── Dispatch results to leaderboard ──────────────────────────────
-      - name: Dispatch score to leaderboard
-        if: success()
-        env:
-          TOKEN:   ${{ secrets.LEADERBOARD_TOKEN }}
-          LB_REPO: ${{ inputs.leaderboard_repo }}
-          SID:     ${{ steps.meta.outputs.student_id }}
-          RESULTS: ${{ steps.eval.outputs.results_json }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPO:    ${{ github.repository }}
-          SHA:     ${{ github.sha }}
-          ACTOR:   ${{ github.actor }}
+      # ── Submit to leaderboard ────────────────────────────────────────
+      - name: Submit to leaderboard
         run: |
-          PAYLOAD=$(jq -n \
-            --arg sid     "$SID" \
-            --argjson results "$RESULTS" \
-            --arg run_url "$RUN_URL" \
-            --arg repo    "$REPO" \
-            --arg sha     "$SHA" \
-            --arg actor   "$ACTOR" \
-            '{
-              event_type: "submit_score",
-              client_payload: {
-                student_id: $sid,
-                results:    $results,
-                audit: {
-                  repository: $repo,
-                  run_url:    $run_url,
-                  sha:        $sha,
-                  actor:      $actor
-                }
+          python - <<'EOF'
+          import json, os, urllib.request
+
+          results = json.load(open("results.json"))
+
+          payload = json.dumps({
+              "event_type": "submit_score",
+              "client_payload": {
+                  "student_id": "${{ steps.meta.outputs.student_id }}",
+                  "results":    results,
+                  "audit": {
+                      "repository": "${{ github.repository }}",
+                      "run_id":     "${{ github.run_id }}",
+                      "run_url":    "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                      "sha":        "${{ github.sha }}",
+                      "actor":      "${{ github.actor }}",
+                  },
               }
-            }')
-          echo "Dispatching to $LB_REPO:"
-          echo "$PAYLOAD" | jq
-          CODE=$(curl -sS -o /tmp/disp_body -w "%{http_code}" \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$LB_REPO/dispatches" \
-            -d "$PAYLOAD")
-          echo "HTTP $CODE"
-          cat /tmp/disp_body || true
-          if [ "$CODE" != "204" ]; then
-            echo "::error::dispatch to $LB_REPO failed (HTTP $CODE)"
-            exit 1
-          fi
-          echo "Dispatch successful."
+          }).encode()
+
+          class PostRedirectHandler(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return urllib.request.Request(
+                      newurl, data=req.data, headers=dict(req.headers), method=req.method
+                  )
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/ntu-rl-2026-spring2-hw4/hw4-3-leaderboard/dispatches",
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {os.environ['LEADERBOARD_TOKEN']}",
+                  "Accept": "application/vnd.github.v3+json",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          opener = urllib.request.build_opener(PostRedirectHandler)
+          with opener.open(req) as r:
+              print(f"Submitted: HTTP {r.status}")
+          EOF
