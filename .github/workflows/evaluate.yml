@@ -50,15 +50,11 @@ jobs:
           )
           echo "student_id=$student_id" >> "$GITHUB_OUTPUT"
 
-      - name: Reject template placeholder / invalid ID
+      - name: Reject template placeholder
         run: |
           SID="${{ steps.meta.outputs.student_id }}"
           if [ "$SID" = "r00000000" ]; then
             echo "::error::Student ID is r00000000 — the template placeholder. Update Q3/meta.xml with your real student ID."
-            exit 1
-          fi
-          if ! echo "$SID" | grep -Eq '^[brt][0-9]{8,9}$'; then
-            echo "::error::student_id must match ^[brt][0-9]{8,9}$ (lowercase). Got '$SID'."
             exit 1
           fi
 
