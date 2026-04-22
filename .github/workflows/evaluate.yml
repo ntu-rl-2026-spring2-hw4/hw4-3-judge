@@ -57,8 +57,8 @@ jobs:
             echo "::error::Student ID is r00000000 — the template placeholder. Update Q3/meta.xml with your real student ID."
             exit 1
           fi
-          if ! echo "$SID" | grep -Eq '^[br][0-9]{8,9}$'; then
-            echo "::error::student_id must match ^[br][0-9]{8,9}$ (lowercase). Got '$SID'."
+          if ! echo "$SID" | grep -Eq '^[brt][0-9]{8,9}$'; then
+            echo "::error::student_id must match ^[brt][0-9]{8,9}$ (lowercase). Got '$SID'."
             exit 1
           fi
 
